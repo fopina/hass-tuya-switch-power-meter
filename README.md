@@ -1,3 +1,8 @@
+BASED OFF https://github.com/rospogrigio/localtuya
+TICKET REFER TO https://github.com/home-assistant/core/issues/121008
+https://github.com/tuya/tuya-device-sharing-sdk/issues/16
+
+
 ![logo](https://github.com/rospogrigio/localtuya-homeassistant/blob/master/img/logo-small.png)
 
 A Home Assistant custom Integration for local handling of Tuya-based devices.
