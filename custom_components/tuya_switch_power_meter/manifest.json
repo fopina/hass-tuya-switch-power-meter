@@ -1,14 +1,14 @@
 {
-  "domain": "localtuya",
-  "name": "LocalTuya integration",
+  "domain": "tuya_switch_power_meter",
+  "name": "Tuya Switch Power Meter",
   "codeowners": [
-    "@rospogrigio", "@postlund"
+    "@fopina"
   ],
   "config_flow": true,
   "dependencies": [],
-  "documentation": "https://github.com/rospogrigio/localtuya/",
-  "iot_class": "local_push",
-  "issue_tracker": "https://github.com/rospogrigio/localtuya/issues",
+  "documentation": "https://github.com/fopina/hass-tuya-switch-power-meter",
+  "iot_class": "cloud_push",
+  "issue_tracker": "https://github.com/fopina/hass-tuya-switch-power-meter/issues",
   "requirements": [],
-  "version": "5.2.1"
+  "version": "0.0.1"
 }

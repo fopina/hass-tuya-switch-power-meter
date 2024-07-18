@@ -1,6 +1,6 @@
 [tool.black]
 target-version = ["py311"]
-include = 'custom_components/localtuya/.*\.py'
+include = 'custom_components/tuya_switch_power_meter/.*\.py'
 
 # pylint config stolen from Home Assistant
 # Use a conservative default here; 2 should speed up most setups and not hurt

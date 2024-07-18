@@ -1,4 +1,4 @@
-"""The LocalTuya integration."""
+"""The Tuya Switch Power Meter integration."""
 import asyncio
 import logging
 import time
@@ -32,7 +32,6 @@ from .common import TuyaDevice, async_config_entry_by_device_id
 from .config_flow import ENTRIES_VERSION, config_schema
 from .const import (
     ATTR_UPDATED_AT,
-    CONF_NO_CLOUD,
     CONF_PRODUCT_KEY,
     CONF_USER_ID,
     DATA_CLOUD,
@@ -64,7 +63,7 @@ SERVICE_SET_DP_SCHEMA = vol.Schema(
 
 
 async def async_setup(hass: HomeAssistant, config: dict):
-    """Set up the LocalTuya integration component."""
+    """Set up tuya_switch_power_meter integration component."""
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][TUYA_DEVICES] = {}
 
@@ -200,7 +199,6 @@ async def async_migrate_entry(hass, config_entry: ConfigEntry):
             new_data[CONF_CLIENT_SECRET] = ""
             new_data[CONF_USER_ID] = ""
             new_data[CONF_USERNAME] = DOMAIN
-            new_data[CONF_NO_CLOUD] = True
             new_data[CONF_DEVICES] = {
                 config_entry.data[CONF_DEVICE_ID]: config_entry.data.copy()
             }
@@ -231,7 +229,7 @@ async def async_migrate_entry(hass, config_entry: ConfigEntry):
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
-    """Set up LocalTuya integration from a config entry."""
+    """Set up tuya_switch_power_meter integration from a config entry."""
     if entry.version < ENTRIES_VERSION:
         _LOGGER.debug(
             "Skipping setup for entry %s since its version (%s) is old",
@@ -245,20 +243,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     secret = entry.data[CONF_CLIENT_SECRET]
     user_id = entry.data[CONF_USER_ID]
     tuya_api = TuyaCloudApi(hass, region, client_id, secret, user_id)
-    no_cloud = True
-    if CONF_NO_CLOUD in entry.data:
-        no_cloud = entry.data.get(CONF_NO_CLOUD)
-    if no_cloud:
-        _LOGGER.info("Cloud API account not configured.")
-        # wait 1 second to make sure possible migration has finished
-        await asyncio.sleep(1)
+    res = await tuya_api.async_get_access_token()
+    if res != "ok":
+        _LOGGER.error("Cloud API connection failed: %s", res)
     else:
-        res = await tuya_api.async_get_access_token()
-        if res != "ok":
-            _LOGGER.error("Cloud API connection failed: %s", res)
-        else:
-            _LOGGER.info("Cloud API connection succeeded.")
-            res = await tuya_api.async_get_devices_list()
+        _LOGGER.info("Cloud API connection succeeded.")
+        res = await tuya_api.async_get_devices_list()
     hass.data[DOMAIN][DATA_CLOUD] = tuya_api
 
     async def setup_entities(device_ids):

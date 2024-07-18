@@ -184,7 +184,7 @@ class TuyaDevice(pytuya.TuyaListener, pytuya.ContextualLogger):
             self._connect_task = asyncio.create_task(self._make_connection())
 
     async def _make_connection(self):
-        """Subscribe localtuya entity events."""
+        """Subscribe tuya_switch_power_meter entity events."""
         self.info("Trying to connect to %s...", self._dev_config_entry[CONF_HOST])
 
         try:

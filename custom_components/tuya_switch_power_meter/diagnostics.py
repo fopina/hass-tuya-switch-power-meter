@@ -1,4 +1,4 @@
-"""Diagnostics support for LocalTuya."""
+"""Diagnostics support for tuya_switch_power_meter."""
 from __future__ import annotations
 
 import copy

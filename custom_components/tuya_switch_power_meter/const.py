@@ -1,6 +1,6 @@
-"""Constants for localtuya integration."""
+"""Constants for tuya_switch_power_meter integration."""
 
-DOMAIN = "localtuya"
+DOMAIN = "tuya_switch_power_meter"
 
 DATA_DISCOVERY = "discovery"
 DATA_CLOUD = "cloud_data"
@@ -42,7 +42,6 @@ CONF_ACTION = "action"
 CONF_ADD_DEVICE = "add_device"
 CONF_EDIT_DEVICE = "edit_device"
 CONF_SETUP_CLOUD = "setup_cloud"
-CONF_NO_CLOUD = "no_cloud"
 CONF_MANUAL_DPS = "manual_dps_strings"
 CONF_DEFAULT_VALUE = "dps_default_value"
 CONF_RESET_DPIDS = "reset_dpids"
