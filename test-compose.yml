@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  hass:
+    image: ghcr.io/home-assistant/home-assistant:2024.7.2
+    restart: unless-stopped
+    ports:
+      - 8123:8123
+    volumes:
+      - config:/config
+      - ./custom_components:/config/custom_components
+
+volumes:
+  config:
