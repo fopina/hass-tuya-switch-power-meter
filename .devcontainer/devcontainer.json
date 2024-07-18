@@ -11,10 +11,10 @@
 
 	// Use 'forwardPorts' to make a list of ports inside the container available locally.
 	// This can be used to network with other containers or the host.
-	"forwardPorts": [8123]
+	"forwardPorts": [8123],
 
 	// Use 'postCreateCommand' to run commands after the container is created.
-	// "postCreateCommand": "pip install --user -r requirements.txt",
+	"postCreateCommand": "ln -s /workspaces/hass-tuya-switch-power-meter/custom_components /config/custom_components"
 
 	// Configure tool-specific properties.
 	// "customizations": {},

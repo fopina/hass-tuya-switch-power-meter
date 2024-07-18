@@ -7,6 +7,8 @@ services:
     volumes:
       - config:/config
       - ../../:/workspaces:cached
+    entrypoint: ''
+    command: sleep infinity
 
 volumes:
   config:
