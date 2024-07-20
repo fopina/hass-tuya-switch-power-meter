@@ -73,7 +73,7 @@ class TuyaCloudApi:
             "sign_method": "HMAC-SHA256",
         }
         full_url = self._base_url + url
-        # _LOGGER.debug("\n" + method + ": [%s]", full_url)
+        _LOGGER.debug("\n" + method + ": [%s]", full_url)
 
         if method == "GET":
             func = functools.partial(
@@ -86,7 +86,7 @@ class TuyaCloudApi:
                 headers=dict(default_par, **headers),
                 data=json.dumps(body),
             )
-            # _LOGGER.debug("BODY: [%s]", body)
+            _LOGGER.debug("BODY: [%s]", body)
         elif method == "PUT":
             func = functools.partial(
                 requests.put,
@@ -96,7 +96,6 @@ class TuyaCloudApi:
             )
 
         resp = await self._hass.async_add_executor_job(func)
-        # r = json.dumps(r.json(), indent=2, ensure_ascii=False) # Beautify the format
         return resp
 
     async def async_get_access_token(self):
@@ -127,13 +126,13 @@ class TuyaCloudApi:
 
         r_json = resp.json()
         if not r_json["success"]:
-            # _LOGGER.debug(
-            #     "Request failed, reply is %s",
-            #     json.dumps(r_json, indent=2, ensure_ascii=False)
-            # )
+            _LOGGER.debug(
+                "Request failed, reply is %s",
+                json.dumps(r_json, indent=2, ensure_ascii=False)
+            )
             return f"Error {r_json['code']}: {r_json['msg']}"
 
         self.device_list = {dev["id"]: dev for dev in r_json["result"]}
-        # _LOGGER.debug("DEV_LIST: %s", self.device_list)
+        _LOGGER.debug("DEV_LIST: %s", self.device_list)
 
         return "ok"
