@@ -1,113 +1,158 @@
-"""Platform to present any Tuya DP as a number."""
+"""Support for Tuya Number entities."""
+from __future__ import annotations
+
+import json
 import logging
-from functools import partial
 
-import voluptuous as vol
-from homeassistant.components.number import DOMAIN, NumberEntity
-from homeassistant.const import CONF_DEVICE_CLASS, STATE_UNKNOWN
+from homeassistant.components.number import DOMAIN as DEVICE_DOMAIN
+from homeassistant.components.number import NumberEntity
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity import Entity
+from tuya_iot import TuyaDevice, TuyaDeviceManager
 
-from .common import LocalTuyaEntity, async_setup_entry
+from .base import TuyaHaEntity
 from .const import (
-    CONF_DEFAULT_VALUE,
-    CONF_MAX_VALUE,
-    CONF_MIN_VALUE,
-    CONF_PASSIVE_ENTITY,
-    CONF_RESTORE_ON_RECONNECT,
-    CONF_STEPSIZE_VALUE,
+    DOMAIN,
+    TUYA_DEVICE_MANAGER,
+    TUYA_DISCOVERY_NEW,
+    TUYA_HA_DEVICES,
+    TUYA_HA_TUYA_MAP,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
-DEFAULT_MIN = 0
-DEFAULT_MAX = 100000
-DEFAULT_STEP = 1.0
+TUYA_SUPPORT_TYPE = {
+    "hps",  # Human Presence Sensor
+    "kfj",  # Coffee Maker
+}
+
+# Switch(kg), Socket(cz), Power Strip(pc)
+# https://developer.tuya.com/docs/iot/open-api/standard-function/electrician-category/categorykgczpc?categoryId=486118
+DPCODE_SENSITIVITY = "sensitivity"
+
+# Coffee Maker
+# https://developer.tuya.com/en/docs/iot/f?id=K9gf4701ox167
+DPCODE_TEMPSET = "temp_set"
+DPCODE_WARMTIME = "warm_time"
+DPCODE_WATERSET = "water_set"
+DPCODE_POWDERSET = "powder_set"
+DPCODE_CLOUDRECIPE = "cloud_recipe_number"
 
 
-def flow_schema(dps):
-    """Return schema used in config flow."""
-    return {
-        vol.Optional(CONF_MIN_VALUE, default=DEFAULT_MIN): vol.All(
-            vol.Coerce(float),
-            vol.Range(min=-1000000.0, max=1000000.0),
-        ),
-        vol.Required(CONF_MAX_VALUE, default=DEFAULT_MAX): vol.All(
-            vol.Coerce(float),
-            vol.Range(min=-1000000.0, max=1000000.0),
-        ),
-        vol.Required(CONF_STEPSIZE_VALUE, default=DEFAULT_STEP): vol.All(
-            vol.Coerce(float),
-            vol.Range(min=0.0, max=1000000.0),
-        ),
-        vol.Required(CONF_RESTORE_ON_RECONNECT): bool,
-        vol.Required(CONF_PASSIVE_ENTITY): bool,
-        vol.Optional(CONF_DEFAULT_VALUE): str,
-    }
+async def async_setup_entry(
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+) -> None:
+    """Set up tuya number dynamically through tuya discovery."""
+    _LOGGER.debug("number init")
+
+    hass.data[DOMAIN][entry.entry_id][TUYA_HA_TUYA_MAP][
+        DEVICE_DOMAIN
+    ] = TUYA_SUPPORT_TYPE
+
+    @callback
+    def async_discover_device(dev_ids):
+        """Discover and add a discovered tuya number."""
+        _LOGGER.debug(f"number add-> {dev_ids}")
+        if not dev_ids:
+            return
+        entities = _setup_entities(hass, entry, dev_ids)
+        for entrty in entitier:
+            hass.data[DOMAIN][entry.entry_id][TUYA_HA_DEVICES].add(entrty.unique_id)
+        async_add_entities(entities)
+
+    entry.async_on_unload(
+        async_dispatcher_connect(
+            hass, TUYA_DISCOVERY_NEW.format(DEVICE_DOMAIN), async_discover_device
+        )
+    )
+
+    device_manager = hass.data[DOMAIN][entry.entry_id][TUYA_DEVICE_MANAGER]
+    device_ids = []
+    for (device_id, device) in device_manager.device_map.items():
+        if device.category in TUYA_SUPPORT_TYPE:
+            device_ids.append(device_id)
+    async_discover_device(device_ids)
 
 
-class LocaltuyaNumber(LocalTuyaEntity, NumberEntity):
-    """Representation of a Tuya Number."""
+def _setup_entities(
+    hass: HomeAssistant, entry: ConfigEntry, device_ids: list[str]
+) -> list[Entity]:
+    """Set up Tuya Switch device."""
+    device_manager = hass.data[DOMAIN][entry.entry_id][TUYA_DEVICE_MANAGER]
+    entities: list[Entity] = []
+    for device_id in device_ids:
+        device = device_manager.device_map[device_id]
+        if device is None:
+            continue
+
+        if DPCODE_SENSITIVITY in device.status:
+            entities.append(TuyaHaNumber(device, device_manager, DPCODE_SENSITIVITY))
+
+        if DPCODE_TEMPSET in device.status:
+            entities.append(TuyaHaNumber(device, device_manager, DPCODE_TEMPSET))
+
+        if DPCODE_WARMTIME in device.status:
+            entities.append(TuyaHaNumber(device, device_manager, DPCODE_WARMTIME))
+
+        if DPCODE_WATERSET in device.status:
+            entities.append(TuyaHaNumber(device, device_manager, DPCODE_WATERSET))
+
+        if DPCODE_POWDERSET in device.status:
+            entities.append(TuyaHaNumber(device, device_manager, DPCODE_POWDERSET))
+
+        if DPCODE_CLOUDRECIPE in device.status:
+            entities.append(TuyaHaNumber(device, device_manager, DPCODE_CLOUDRECIPE))
+
+    return entities
+
+
+class TuyaHaNumber(TuyaHaEntity, NumberEntity):
+    """Tuya Device Number."""
 
     def __init__(
-        self,
-        device,
-        config_entry,
-        sensorid,
-        **kwargs,
-    ):
-        """Initialize the Tuya sensor."""
-        super().__init__(device, config_entry, sensorid, _LOGGER, **kwargs)
-        self._state = STATE_UNKNOWN
+        self, device: TuyaDevice, device_manager: TuyaDeviceManager, code: str = ""
+    ) -> None:
+        """Init tuya number device."""
+        self._code = code
+        super().__init__(device, device_manager)
 
-        self._min_value = DEFAULT_MIN
-        if CONF_MIN_VALUE in self._config:
-            self._min_value = self._config.get(CONF_MIN_VALUE)
-
-        self._max_value = DEFAULT_MAX
-        if CONF_MAX_VALUE in self._config:
-            self._max_value = self._config.get(CONF_MAX_VALUE)
-
-        self._step_size = DEFAULT_STEP
-        if CONF_STEPSIZE_VALUE in self._config:
-            self._step_size = self._config.get(CONF_STEPSIZE_VALUE)
-
-        # Override standard default value handling to cast to a float
-        default_value = self._config.get(CONF_DEFAULT_VALUE)
-        if default_value is not None:
-            self._default_value = float(default_value)
-
-    @property
-    def native_value(self) -> float:
-        """Return sensor state."""
-        return self._state
-
-    @property
-    def native_min_value(self) -> float:
-        """Return the minimum value."""
-        return self._min_value
-
-    @property
-    def native_max_value(self) -> float:
-        """Return the maximum value."""
-        return self._max_value
-
-    @property
-    def native_step(self) -> float:
-        """Return the maximum value."""
-        return self._step_size
-
-    @property
-    def device_class(self):
-        """Return the class of this device."""
-        return self._config.get(CONF_DEVICE_CLASS)
-
-    async def async_set_native_value(self, value: float) -> None:
+    def set_value(self, value: float) -> None:
         """Update the current value."""
-        await self._device.set_dp(value, self._dp_id)
+        self._send_command([{"code": self._code, "value": int(value)}])
 
-    # Default value is the minimum value
-    def entity_default_value(self):
-        """Return the minimum value as the default for this entity type."""
-        return self._min_value
+    @property
+    def unique_id(self) -> str | None:
+        """Return a unique ID."""
+        return f"{super().unique_id}{self._code}"
 
+    @property
+    def name(self) -> str | None:
+        """Return Tuya device name."""
+        return f"{self.tuya_device.name}{self._code}"
 
-async_setup_entry = partial(async_setup_entry, DOMAIN, LocaltuyaNumber, flow_schema)
+    @property
+    def value(self) -> float:
+        """Return current value."""
+        return self.tuya_device.status.get(self._code, 0)
+
+    @property
+    def min_value(self) -> float:
+        """Return min value."""
+        return self._get_code_range()[0]
+
+    @property
+    def max_value(self) -> float:
+        """Return max value."""
+        return self._get_code_range()[1]
+
+    @property
+    def step(self) -> float:
+        """Return step."""
+        return self._get_code_range()[2]
+
+    def _get_code_range(self) -> tuple[int, int, int]:
+        dp_range = json.loads(self.tuya_device.function.get(self._code).values)
+        return dp_range.get("min", 0), dp_range.get("max", 0), dp_range.get("step", 0)

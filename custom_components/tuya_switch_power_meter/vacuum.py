@@ -1,247 +1,203 @@
-"""Platform to locally control Tuya-based vacuum devices."""
-import logging
-from functools import partial
+#!/usr/bin/env python3
+"""Support for Tuya Vacuums."""
+from __future__ import annotations
 
-import voluptuous as vol
+import logging
+from typing import Any
+
+from homeassistant.components.vacuum import DOMAIN as DEVICE_DOMAIN
 from homeassistant.components.vacuum import (
-    DOMAIN,
     STATE_CLEANING,
     STATE_DOCKED,
-    STATE_ERROR,
     STATE_IDLE,
     STATE_PAUSED,
     STATE_RETURNING,
-    StateVacuumEntity, VacuumEntityFeature,
+    SUPPORT_BATTERY,
+    SUPPORT_PAUSE,
+    SUPPORT_RETURN_HOME,
+    SUPPORT_START,
+    SUPPORT_STATE,
+    SUPPORT_STATUS,
+    SUPPORT_STOP,
+    StateVacuumEntity,
+)
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.helpers.entity import Entity
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+
+from .base import TuyaHaEntity
+from .const import (
+    DOMAIN,
+    TUYA_DEVICE_MANAGER,
+    TUYA_DISCOVERY_NEW,
+    TUYA_HA_DEVICES,
+    TUYA_HA_TUYA_MAP,
 )
 
-from .common import LocalTuyaEntity, async_setup_entry
-from .const import (
-    CONF_BATTERY_DP,
-    CONF_CLEAN_AREA_DP,
-    CONF_CLEAN_RECORD_DP,
-    CONF_CLEAN_TIME_DP,
-    CONF_DOCKED_STATUS_VALUE,
-    CONF_FAN_SPEED_DP,
-    CONF_FAN_SPEEDS,
-    CONF_FAULT_DP,
-    CONF_IDLE_STATUS_VALUE,
-    CONF_LOCATE_DP,
-    CONF_MODE_DP,
-    CONF_MODES,
-    CONF_PAUSED_STATE,
-    CONF_POWERGO_DP,
-    CONF_RETURN_MODE,
-    CONF_RETURNING_STATUS_VALUE,
-    CONF_STOP_STATUS,
-)
 
 _LOGGER = logging.getLogger(__name__)
 
-CLEAN_TIME = "clean_time"
-CLEAN_AREA = "clean_area"
-CLEAN_RECORD = "clean_record"
-MODES_LIST = "cleaning_mode_list"
-MODE = "cleaning_mode"
-FAULT = "fault"
+TUYA_SUPPORT_TYPE = {
+    "sd",  # Robot Vaccuum
+}
 
-DEFAULT_IDLE_STATUS = "standby,sleep"
-DEFAULT_RETURNING_STATUS = "docking"
-DEFAULT_DOCKED_STATUS = "charging,chargecompleted"
-DEFAULT_MODES = "smart,wall_follow,spiral,single"
-DEFAULT_FAN_SPEEDS = "low,normal,high"
-DEFAULT_PAUSED_STATE = "paused"
-DEFAULT_RETURN_MODE = "chargego"
-DEFAULT_STOP_STATUS = "standby"
+# Vacuum(sd),
+# https://developer.tuya.com/docs/iot/open-api/standard-function/electrician-category/categorykgczpc?categoryId=486118
+DPCODE_MODE = "mode"
+DPCODE_POWER = "power"  # Device switch
+DPCODE_POWER_GO = "power_go"  # Cleaning switch
+DPCODE_STATUS = "status"
+DPCODE_PAUSE = "pause"
+DPCODE_RETURN_HOME = "switch_charge"
+
+DPCODE_BATTERY = "electricity_left"
+DPCODE_LOCATE = "seek"
+DPCODE_STATUS_FULL = "status_full"
+DPCODE_CLEAN_AREA = "clean_area"
+DPCODE_CLEAN_TIME = "clean_time"
+DPCODE_CLEAN_RECORD = "clean_record"
+
+async def async_setup_entry(
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+) -> None:
+    """Set up tuya vacuum dynamically through tuya discovery."""
+    _LOGGER.debug("vacuum init")
+
+    hass.data[DOMAIN][entry.entry_id][TUYA_HA_TUYA_MAP][
+        DEVICE_DOMAIN
+    ] = TUYA_SUPPORT_TYPE
+
+    @callback
+    def async_discover_device(dev_ids):
+        """Discover and add a discovered tuya sensor."""
+        _LOGGER.debug(f"vacuum add -> {dev_ids}")
+        if not dev_ids:
+            return
+        entities = _setup_entities(hass, entry, dev_ids)
+        async_add_entities(entities)
+
+    entry.async_on_unload(
+        async_dispatcher_connect(
+            hass, TUYA_DISCOVERY_NEW.format(DEVICE_DOMAIN), async_discover_device
+        )
+    )
+
+    device_manager = hass.data[DOMAIN][entry.entry_id][TUYA_DEVICE_MANAGER]
+    device_ids = []
+    for (device_id, device) in device_manager.device_map.items():
+        if device.category in TUYA_SUPPORT_TYPE:
+            device_ids.append(device_id)
+    async_discover_device(device_ids)
 
 
-def flow_schema(dps):
-    """Return schema used in config flow."""
-    return {
-        vol.Required(CONF_IDLE_STATUS_VALUE, default=DEFAULT_IDLE_STATUS): str,
-        vol.Required(CONF_POWERGO_DP): vol.In(dps),
-        vol.Required(CONF_DOCKED_STATUS_VALUE, default=DEFAULT_DOCKED_STATUS): str,
-        vol.Optional(
-            CONF_RETURNING_STATUS_VALUE, default=DEFAULT_RETURNING_STATUS
-        ): str,
-        vol.Optional(CONF_BATTERY_DP): vol.In(dps),
-        vol.Optional(CONF_MODE_DP): vol.In(dps),
-        vol.Optional(CONF_MODES, default=DEFAULT_MODES): str,
-        vol.Optional(CONF_RETURN_MODE, default=DEFAULT_RETURN_MODE): str,
-        vol.Optional(CONF_FAN_SPEED_DP): vol.In(dps),
-        vol.Optional(CONF_FAN_SPEEDS, default=DEFAULT_FAN_SPEEDS): str,
-        vol.Optional(CONF_CLEAN_TIME_DP): vol.In(dps),
-        vol.Optional(CONF_CLEAN_AREA_DP): vol.In(dps),
-        vol.Optional(CONF_CLEAN_RECORD_DP): vol.In(dps),
-        vol.Optional(CONF_LOCATE_DP): vol.In(dps),
-        vol.Optional(CONF_FAULT_DP): vol.In(dps),
-        vol.Optional(CONF_PAUSED_STATE, default=DEFAULT_PAUSED_STATE): str,
-        vol.Optional(CONF_STOP_STATUS, default=DEFAULT_STOP_STATUS): str,
-    }
+def _setup_entities(
+    hass: HomeAssistant, entry: ConfigEntry, device_ids: list[str]
+) -> list[Entity]:
+    """Set up Tuya Switch device."""
+    device_manager = hass.data[DOMAIN][entry.entry_id][TUYA_DEVICE_MANAGER]
+    entities: list[Entity] = []
+    for device_id in device_ids:
+        device = device_manager.device_map[device_id]
+        if device is None:
+            continue
+
+        entities.append(TuyaHaVacuum(device, device_manager))
+        hass.data[DOMAIN][entry.entry_id][TUYA_HA_DEVICES].add(device_id)
+    return entities
 
 
-class LocaltuyaVacuum(LocalTuyaEntity, StateVacuumEntity):
-    """Tuya vacuum device."""
+class TuyaHaVacuum(TuyaHaEntity, StateVacuumEntity):
+    """Tuya Vacuum Device."""
 
-    def __init__(self, device, config_entry, switchid, **kwargs):
-        """Initialize a new LocaltuyaVacuum."""
-        super().__init__(device, config_entry, switchid, _LOGGER, **kwargs)
-        self._state = None
-        self._battery_level = None
-        self._attrs = {}
+    @property
+    def name(self) -> str | None:
+        """Return Tuya device name."""
+        return self.tuya_device.name
 
-        self._idle_status_list = []
-        if self.has_config(CONF_IDLE_STATUS_VALUE):
-            self._idle_status_list = self._config[CONF_IDLE_STATUS_VALUE].split(",")
+    @property
+    def battery_level(self) -> int | None:
+        """Return Tuya device state."""
+        return self.tuya_device.status.get(DPCODE_BATTERY)
+		
+    @property
+    def device_state_attributes(self):
+        """Return the optional state attributes with device specific additions."""
+        attr = {}
+        if self.tuya_device.status.get(DPCODE_MODE):
+          attr[DPCODE_MODE] = self.tuya_device.status.get(DPCODE_MODE)
+        if self.tuya_device.status.get(DPCODE_STATUS):
+          attr[DPCODE_STATUS_FULL] = self.tuya_device.status.get(DPCODE_STATUS)
+        if self.tuya_device.status.get(DPCODE_CLEAN_AREA):
+          attr[DPCODE_CLEAN_AREA] = self.tuya_device.status.get(DPCODE_CLEAN_AREA)
+        if self.tuya_device.status.get(DPCODE_CLEAN_TIME):
+          attr[DPCODE_CLEAN_TIME] = self.tuya_device.status.get(DPCODE_CLEAN_TIME)
+        if self.tuya_device.status.get(DPCODE_CLEAN_RECORD):
+          attr[DPCODE_CLEAN_RECORD] = self.tuya_device.status.get(DPCODE_CLEAN_RECORD)
+        return attr
+		
+    @property
+    def state(self):
+        """Return Tuya device state."""
+        if (
+            DPCODE_PAUSE in self.tuya_device.status
+            and self.tuya_device.status[DPCODE_PAUSE]
+        ):
+            return STATE_PAUSED
 
-        self._modes_list = []
-        if self.has_config(CONF_MODES):
-            self._modes_list = self._config[CONF_MODES].split(",")
-            self._attrs[MODES_LIST] = self._modes_list
+        status = self.tuya_device.status.get(DPCODE_STATUS)
 
-        self._docked_status_list = []
-        if self.has_config(CONF_DOCKED_STATUS_VALUE):
-            self._docked_status_list = self._config[CONF_DOCKED_STATUS_VALUE].split(",")
-
-        self._fan_speed_list = []
-        if self.has_config(CONF_FAN_SPEEDS):
-            self._fan_speed_list = self._config[CONF_FAN_SPEEDS].split(",")
-
-        self._fan_speed = ""
-        self._cleaning_mode = ""
-        _LOGGER.debug("Initialized vacuum [%s]", self.name)
+        if status == "standby":
+            return STATE_IDLE
+        if status == "goto_charge" or status == "docking":
+            return STATE_RETURNING
+        if status == "charging" or status == "charge_done" or status == "chargecompleted":
+            return STATE_DOCKED
+        if status == "pause":
+            return STATE_PAUSED
+        return STATE_CLEANING
 
     @property
     def supported_features(self):
         """Flag supported features."""
-        supported_features = (
-            VacuumEntityFeature.START
-            | VacuumEntityFeature.PAUSE
-            | VacuumEntityFeature.STOP
-            | VacuumEntityFeature.STATUS
-            | VacuumEntityFeature.STATE
-        )
+        supports = 0
+        if DPCODE_PAUSE in self.tuya_device.status:
+            supports = supports | SUPPORT_PAUSE
+        if DPCODE_RETURN_HOME in self.tuya_device.status:
+            supports = supports | SUPPORT_RETURN_HOME
+        if DPCODE_STATUS in self.tuya_device.status:
+            supports = supports | SUPPORT_STATE
+            supports = supports | SUPPORT_STATUS
+        if DPCODE_POWER_GO in self.tuya_device.status:
+            supports = supports | SUPPORT_STOP
+            supports = supports | SUPPORT_START
+        if DPCODE_BATTERY in self.tuya_device.status:
+            supports = supports | SUPPORT_BATTERY
+        return supports
 
-        if self.has_config(CONF_RETURN_MODE):
-            supported_features = supported_features | VacuumEntityFeature.RETURN_HOME
-        if self.has_config(CONF_FAN_SPEED_DP):
-            supported_features = supported_features | VacuumEntityFeature.FAN_SPEED
-        if self.has_config(CONF_BATTERY_DP):
-            supported_features = supported_features | VacuumEntityFeature.BATTERY
-        if self.has_config(CONF_LOCATE_DP):
-            supported_features = supported_features | VacuumEntityFeature.LOCATE
+    def start(self, **kwargs: Any) -> None:
+        """Turn the device on."""
+        _LOGGER.debug(f"Starting {self.name}")
 
-        return supported_features
+        self._send_command([{"code": DPCODE_POWER_GO, "value": True}])
 
-    @property
-    def state(self):
-        """Return the vacuum state."""
-        return self._state
+    def stop(self, **kwargs: Any) -> None:
+        """Turn the device off."""
+        _LOGGER.debug(f"Stopping {self.name}")
+        self._send_command([{"code": DPCODE_POWER_GO, "value": False}])
 
-    @property
-    def battery_level(self):
-        """Return the current battery level."""
-        return self._battery_level
+    def pause(self, **kwargs: Any) -> None:
+        """Pause the device."""
+        _LOGGER.debug(f"Pausing {self.name}")
+        self._send_command([{"code": DPCODE_PAUSE, "value": True}])
 
-    @property
-    def extra_state_attributes(self):
-        """Return the specific state attributes of this vacuum cleaner."""
-        return self._attrs
-
-    @property
-    def fan_speed(self):
-        """Return the current fan speed."""
-        return self._fan_speed
-
-    @property
-    def fan_speed_list(self) -> list:
-        """Return the list of available fan speeds."""
-        return self._fan_speed_list
-
-    async def async_start(self, **kwargs):
-        """Turn the vacuum on and start cleaning."""
-        await self._device.set_dp(True, self._config[CONF_POWERGO_DP])
-
-    async def async_pause(self, **kwargs):
-        """Stop the vacuum cleaner, do not return to base."""
-        await self._device.set_dp(False, self._config[CONF_POWERGO_DP])
-
-    async def async_return_to_base(self, **kwargs):
-        """Set the vacuum cleaner to return to the dock."""
-        if self.has_config(CONF_RETURN_MODE):
-            await self._device.set_dp(
-                self._config[CONF_RETURN_MODE], self._config[CONF_MODE_DP]
-            )
-        else:
-            _LOGGER.error("Missing command for return home in commands set.")
-
-    async def async_stop(self, **kwargs):
-        """Turn the vacuum off stopping the cleaning."""
-        if self.has_config(CONF_STOP_STATUS):
-            await self._device.set_dp(
-                self._config[CONF_STOP_STATUS], self._config[CONF_MODE_DP]
-            )
-        else:
-            _LOGGER.error("Missing command for stop in commands set.")
-
-    async def async_clean_spot(self, **kwargs):
-        """Perform a spot clean-up."""
-        return None
-
-    async def async_locate(self, **kwargs):
-        """Locate the vacuum cleaner."""
-        if self.has_config(CONF_LOCATE_DP):
-            await self._device.set_dp("", self._config[CONF_LOCATE_DP])
-
-    async def async_set_fan_speed(self, fan_speed, **kwargs):
-        """Set the fan speed."""
-        await self._device.set_dp(fan_speed, self._config[CONF_FAN_SPEED_DP])
-
-    async def async_send_command(self, command, params=None, **kwargs):
-        """Send a command to a vacuum cleaner."""
-        if command == "set_mode" and "mode" in params:
-            mode = params["mode"]
-            await self._device.set_dp(mode, self._config[CONF_MODE_DP])
-
-    def status_updated(self):
-        """Device status was updated."""
-        state_value = str(self.dps(self._dp_id))
-
-        if state_value in self._idle_status_list:
-            self._state = STATE_IDLE
-        elif state_value in self._docked_status_list:
-            self._state = STATE_DOCKED
-        elif state_value == self._config[CONF_RETURNING_STATUS_VALUE]:
-            self._state = STATE_RETURNING
-        elif state_value == self._config[CONF_PAUSED_STATE]:
-            self._state = STATE_PAUSED
-        else:
-            self._state = STATE_CLEANING
-
-        if self.has_config(CONF_BATTERY_DP):
-            self._battery_level = self.dps_conf(CONF_BATTERY_DP)
-
-        self._cleaning_mode = ""
-        if self.has_config(CONF_MODES):
-            self._cleaning_mode = self.dps_conf(CONF_MODE_DP)
-            self._attrs[MODE] = self._cleaning_mode
-
-        self._fan_speed = ""
-        if self.has_config(CONF_FAN_SPEEDS):
-            self._fan_speed = self.dps_conf(CONF_FAN_SPEED_DP)
-
-        if self.has_config(CONF_CLEAN_TIME_DP):
-            self._attrs[CLEAN_TIME] = self.dps_conf(CONF_CLEAN_TIME_DP)
-
-        if self.has_config(CONF_CLEAN_AREA_DP):
-            self._attrs[CLEAN_AREA] = self.dps_conf(CONF_CLEAN_AREA_DP)
-
-        if self.has_config(CONF_CLEAN_RECORD_DP):
-            self._attrs[CLEAN_RECORD] = self.dps_conf(CONF_CLEAN_RECORD_DP)
-
-        if self.has_config(CONF_FAULT_DP):
-            self._attrs[FAULT] = self.dps_conf(CONF_FAULT_DP)
-            if self._attrs[FAULT] != 0:
-                self._state = STATE_ERROR
-
-
-async_setup_entry = partial(async_setup_entry, DOMAIN, LocaltuyaVacuum, flow_schema)
+    def return_to_base(self, **kwargs: Any) -> None:
+        """Return device to Dock"""
+        _LOGGER.debug(f"Return to base device {self.name}")
+        self._send_command([{"code": DPCODE_MODE, "value": "chargego"}])
+		
+    def locate(self, **kwargs: Any) -> None:
+        """Return device to Dock"""
+        _LOGGER.debug(f"Locate the device {self.name}")
+        self._send_command([{"code": DPCODE_LOCATE, "value": True}])

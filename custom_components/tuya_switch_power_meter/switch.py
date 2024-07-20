@@ -1,91 +1,213 @@
-"""Platform to locally control Tuya-based switch devices."""
+#!/usr/bin/env python3
+"""Support for Tuya switches."""
+from __future__ import annotations
+
 import logging
-from functools import partial
+from typing import Any
 
-import voluptuous as vol
-from homeassistant.components.switch import DOMAIN, SwitchEntity
+from tuya_iot import TuyaDevice, TuyaDeviceManager
 
-from .common import LocalTuyaEntity, async_setup_entry
+from homeassistant.components.switch import DOMAIN as DEVICE_DOMAIN, SwitchEntity
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.helpers.entity import Entity
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+
+from .base import TuyaHaEntity
 from .const import (
-    ATTR_CURRENT,
-    ATTR_CURRENT_CONSUMPTION,
-    ATTR_STATE,
-    ATTR_VOLTAGE,
-    CONF_CURRENT,
-    CONF_CURRENT_CONSUMPTION,
-    CONF_DEFAULT_VALUE,
-    CONF_PASSIVE_ENTITY,
-    CONF_RESTORE_ON_RECONNECT,
-    CONF_VOLTAGE,
+    DOMAIN,
+    TUYA_DEVICE_MANAGER,
+    TUYA_DISCOVERY_NEW,
+    TUYA_HA_DEVICES,
+    TUYA_HA_TUYA_MAP,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
+TUYA_SUPPORT_TYPE = {
+    "kg",  # Switch
+    "cz",  # Socket
+    "pc",  # Power Strip
+    "bh",  # Smart Kettle
+    "dlq",  # Breaker
+    "tdq", # Breaker
+    "cwysj",  # Pet Water Feeder
+    "kj",  # Air Purifier
+    "xxj",  # Diffuser
+    "ckmkzq",  # Garage Door Opener
+    "zndb",  # Smart Electricity Meter
+    "fs",  # Fan
+    "sd",  # Vacuum
+    "zndb" "kfj",  # Smart Electricity Meter  # Coffee Maker
+}
 
-def flow_schema(dps):
-    """Return schema used in config flow."""
-    return {
-        vol.Optional(CONF_CURRENT): vol.In(dps),
-        vol.Optional(CONF_CURRENT_CONSUMPTION): vol.In(dps),
-        vol.Optional(CONF_VOLTAGE): vol.In(dps),
-        vol.Required(CONF_RESTORE_ON_RECONNECT): bool,
-        vol.Required(CONF_PASSIVE_ENTITY): bool,
-        vol.Optional(CONF_DEFAULT_VALUE): str,
-    }
+# Switch(kg), Socket(cz), Power Strip(pc)
+# https://developer.tuya.com/en/docs/iot/categorykgczpc?id=Kaiuz08zj1l4y
+DPCODE_SWITCH = "switch"
+
+# Air Purifier
+# https://developer.tuya.com/en/docs/iot/categorykj?id=Kaiuz1atqo5l7
+# Pet Water Feeder
+# https://developer.tuya.com/en/docs/iot/f?id=K9gf46aewxem5
+DPCODE_ANION = "anion"  # Air Purifier - Ionizer unit
+# Air Purifier - Filter cartridge resetting; Pet Water Feeder - Filter cartridge resetting
+DPCODE_FRESET = "filter_reset"
+DPCODE_LIGHT = "light"  # Air Purifier - Light
+DPCODE_LOCK = "lock"  # Air Purifier - Child lock
+# Air Purifier - UV sterilization; Pet Water Feeder - UV sterilization
+DPCODE_UV = "uv"
+DPCODE_WET = "wet"  # Air Purifier - Humidification unit
+DPCODE_PRESET = "pump_reset"  # Pet Water Feeder - Water pump resetting
+DPCODE_WRESET = "water_reset"  # Pet Water Feeder - Resetting of water usage days
+
+DPCODE_START = "start"
+# Coffee Maker
+# https://developer.tuya.com/en/docs/iot/f?id=K9gf4701ox167
+DPCODE_PAUSE = "pause"
+DPCODE_WARM = "warm"
+DPCODE_CLEANING = "cleaning"
+# Fan
+# https://developer.tuya.com/en/docs/iot/f?id=K9gf45vs7vkge
+DPCODE_FAN_LIGHT = "light"
+
+# Vacuum
+#https://developer.tuya.com/en/docs/iot/fsd?id=K9gf487ck1tlo
+DPCODE_VOICE = "voice_switch"
 
 
-class LocaltuyaSwitch(LocalTuyaEntity, SwitchEntity):
-    """Representation of a Tuya switch."""
+async def async_setup_entry(
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+) -> None:
+    """Set up tuya sensors dynamically through tuya discovery."""
+    _LOGGER.debug("switch init")
+
+    hass.data[DOMAIN][entry.entry_id][TUYA_HA_TUYA_MAP][
+        DEVICE_DOMAIN
+    ] = TUYA_SUPPORT_TYPE
+
+    def async_discover_device(dev_ids):
+        """Discover and add a discovered tuya sensor."""
+        _LOGGER.debug("switch add-> %s", dev_ids)
+        if not dev_ids:
+            return
+        entities = _setup_entities(hass, entry, dev_ids)
+        async_add_entities(entities)
+
+    entry.async_on_unload(
+        async_dispatcher_connect(
+            hass, TUYA_DISCOVERY_NEW.format(DEVICE_DOMAIN), async_discover_device
+        )
+    )
+
+    device_manager = hass.data[DOMAIN][entry.entry_id][TUYA_DEVICE_MANAGER]
+    device_ids = []
+    for (device_id, device) in device_manager.device_map.items():
+        if device.category in TUYA_SUPPORT_TYPE:
+            device_ids.append(device_id)
+    async_discover_device(device_ids)
+
+
+def _setup_entities(hass, entry: ConfigEntry, device_ids: list[str]) -> list[Entity]:
+    """Set up Tuya Switch device."""
+    device_manager = hass.data[DOMAIN][entry.entry_id][TUYA_DEVICE_MANAGER]
+    entities: list[Entity] = []
+    for device_id in device_ids:
+        device = device_manager.device_map[device_id]
+        if device is None:
+            continue
+
+        for function in device.function:
+            tuya_ha_switch = None
+            if device.category == "kj":
+                if function in [
+                    DPCODE_ANION,
+                    DPCODE_FRESET,
+                    DPCODE_LIGHT,
+                    DPCODE_LOCK,
+                    DPCODE_UV,
+                    DPCODE_WET,
+                    DPCODE_FAN_LIGHT,
+                ]:
+                    tuya_ha_switch = TuyaHaSwitch(device, device_manager, function)
+                    # Main device switch is handled by the Fan object
+            elif device.category == "cwysj":
+                if function in [DPCODE_FRESET, DPCODE_UV, DPCODE_PRESET, DPCODE_WRESET]:
+                    tuya_ha_switch = TuyaHaSwitch(device, device_manager, function)
+
+                elif function.startswith(DPCODE_SWITCH):
+                    entities.append(TuyaHaSwitch(device, device_manager, function))
+                    tuya_ha_switch = TuyaHaSwitch(device, device_manager, function)
+
+            elif device.category == "kfj":
+                if function in [
+                    DPCODE_SWITCH,
+                    DPCODE_START,
+                    DPCODE_PAUSE,
+                    DPCODE_WARM,
+                    DPCODE_CLEANING,
+                ]:
+                    entities.append(TuyaHaSwitch(device, device_manager, function))
+                    tuya_ha_switch = TuyaHaSwitch(device, device_manager, function)
+					
+            elif device.category == "sd":
+                if function in [DPCODE_VOICE ]:
+                    entities.append(TuyaHaSwitch(device, device_manager, function))
+                    tuya_ha_switch = TuyaHaSwitch(device, device_manager, function)
+
+                    # Main device switch
+            else:
+                if function.startswith(DPCODE_START):
+                    tuya_ha_switch = TuyaHaSwitch(device, device_manager, function)
+                elif function.startswith(DPCODE_SWITCH):
+                    tuya_ha_switch = TuyaHaSwitch(device, device_manager, function)
+
+            if tuya_ha_switch is not None:
+                entities.append(tuya_ha_switch)
+                hass.data[DOMAIN][entry.entry_id][TUYA_HA_DEVICES].add(
+                    tuya_ha_switch.tuya_device.id
+                )
+    return entities
+
+
+class TuyaHaSwitch(TuyaHaEntity, SwitchEntity):
+    """Tuya Switch Device."""
+
+    dp_code_switch = DPCODE_SWITCH
+    dp_code_start = DPCODE_START
 
     def __init__(
-        self,
-        device,
-        config_entry,
-        switchid,
-        **kwargs,
-    ):
-        """Initialize the Tuya switch."""
-        super().__init__(device, config_entry, switchid, _LOGGER, **kwargs)
-        self._state = None
-        _LOGGER.debug("Initialized switch [%s]", self.name)
+        self, device: TuyaDevice, device_manager: TuyaDeviceManager, dp_code: str = ""
+    ) -> None:
+        """Init TuyaHaSwitch."""
+        super().__init__(device, device_manager)
+
+        self.dp_code = dp_code
+        self.channel = (
+            dp_code.replace(DPCODE_SWITCH, "")
+            if dp_code.startswith(DPCODE_SWITCH)
+            else dp_code
+        )
 
     @property
-    def is_on(self):
-        """Check if Tuya switch is on."""
-        return self._state
+    def unique_id(self) -> str | None:
+        """Return a unique ID."""
+        return f"{super().unique_id}{self.channel}"
 
     @property
-    def extra_state_attributes(self):
-        """Return device state attributes."""
-        attrs = {}
-        if self.has_config(CONF_CURRENT):
-            attrs[ATTR_CURRENT] = self.dps(self._config[CONF_CURRENT])
-        if self.has_config(CONF_CURRENT_CONSUMPTION):
-            attrs[ATTR_CURRENT_CONSUMPTION] = (
-                self.dps(self._config[CONF_CURRENT_CONSUMPTION]) / 10
-            )
-        if self.has_config(CONF_VOLTAGE):
-            attrs[ATTR_VOLTAGE] = self.dps(self._config[CONF_VOLTAGE]) / 10
+    def name(self) -> str | None:
+        """Return Tuya device name."""
+        return f"{self.tuya_device.name}{self.channel}"
 
-        # Store the state
-        if self._state is not None:
-            attrs[ATTR_STATE] = self._state
-        elif self._last_state is not None:
-            attrs[ATTR_STATE] = self._last_state
-        return attrs
+    @property
+    def is_on(self) -> bool:
+        """Return true if switch is on."""
+        return self.tuya_device.status.get(self.dp_code, False)
 
-    async def async_turn_on(self, **kwargs):
-        """Turn Tuya switch on."""
-        await self._device.set_dp(True, self._dp_id)
+    def turn_on(self, **kwargs: Any) -> None:
+        """Turn the switch on."""
+        self._send_command([{"code": self.dp_code, "value": True}])
 
-    async def async_turn_off(self, **kwargs):
-        """Turn Tuya switch off."""
-        await self._device.set_dp(False, self._dp_id)
-
-    # Default value is the "OFF" state
-    def entity_default_value(self):
-        """Return False as the default value for this entity type."""
-        return False
-
-
-async_setup_entry = partial(async_setup_entry, DOMAIN, LocaltuyaSwitch, flow_schema)
+    def turn_off(self, **kwargs: Any) -> None:
+        """Turn the switch off."""
+        self._send_command([{"code": self.dp_code, "value": False}])

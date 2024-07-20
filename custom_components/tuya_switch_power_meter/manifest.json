@@ -9,6 +9,8 @@
   "documentation": "https://github.com/fopina/hass-tuya-switch-power-meter",
   "iot_class": "cloud_push",
   "issue_tracker": "https://github.com/fopina/hass-tuya-switch-power-meter/issues",
-  "requirements": [],
+  "requirements": [
+    "tuya-iot-py-sdk==0.4.1"
+  ],
   "version": "0.0.1"
 }
