@@ -1,6 +1,6 @@
 """Constants for the Tuya integration."""
 
-DOMAIN = "tuya_v2"
+DOMAIN = "tuya_switch_power_meter"
 
 CONF_PROJECT_TYPE = "tuya_project_type"
 CONF_ENDPOINT = "endpoint"
